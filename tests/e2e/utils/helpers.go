@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
@@ -35,12 +34,14 @@ type SimpleKeyValue struct {
 	Value interface{}
 }
 
-// StateTransactionKeyValue is a key-value pair with an operation type
+// StateTransactionKeyValue is a key-value pair with an operation type.
 type StateTransactionKeyValue struct {
 	Key           string
 	Value         string
 	OperationType string
 }
+
+var httpClient = newHTTPClient()
 
 // GenerateRandomStringKeys generates random string keys (values are nil).
 func GenerateRandomStringKeys(num int) []SimpleKeyValue {
@@ -78,6 +79,7 @@ func GenerateRandomStringKeyValues(num int) []SimpleKeyValue {
 func newHTTPClient() http.Client {
 	doOnce.Do(func() {
 		defaultClient = http.Client{
+			Timeout: time.Second * 15,
 			Transport: &http.Transport{
 				// Sometimes, the first connection to ingress endpoint takes longer than 1 minute (e.g. AKS)
 				Dial: (&net.Dialer{
@@ -116,7 +118,7 @@ func HTTPGetNTimes(url string, n int) ([]byte, error) {
 	return res, err
 }
 
-// httpGet is a helper to make GET request call to url
+// httpGet is a helper to make GET request call to url.
 func httpGet(url string, timeout time.Duration) ([]byte, error) {
 	resp, err := httpGetRaw(url, timeout) //nolint
 	if err != nil {
@@ -126,7 +128,7 @@ func httpGet(url string, timeout time.Duration) ([]byte, error) {
 	return extractBody(resp.Body)
 }
 
-// HTTPGet is a helper to make GET request call to url
+// HTTPGet is a helper to make GET request call to url.
 func HTTPGet(url string) ([]byte, error) {
 	return httpGet(url, 0 /* no timeout */)
 }
@@ -156,28 +158,26 @@ func HTTPGetRawNTimes(url string, n int) (*http.Response, error) {
 	return res, err
 }
 
-// HTTPGetRaw is a helper to make GET request call to url
+// HTTPGetRaw is a helper to make GET request call to url.
 func httpGetRaw(url string, t time.Duration) (*http.Response, error) {
-	client := newHTTPClient()
 	if t != 0 {
-		client.Timeout = t
+		httpClient.Timeout = t
 	}
-	resp, err := client.Get(sanitizeHTTPURL(url))
+	resp, err := httpClient.Get(sanitizeHTTPURL(url))
 	if err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// HTTPGetRaw is a helper to make GET request call to url
+// HTTPGetRaw is a helper to make GET request call to url.
 func HTTPGetRaw(url string) (*http.Response, error) {
 	return httpGetRaw(url, 0)
 }
 
-// HTTPPost is a helper to make POST request call to url
+// HTTPPost is a helper to make POST request call to url.
 func HTTPPost(url string, data []byte) ([]byte, error) {
-	client := newHTTPClient()
-	resp, err := client.Post(sanitizeHTTPURL(url), "application/json", bytes.NewBuffer(data)) //nolint
+	resp, err := httpClient.Post(sanitizeHTTPURL(url), "application/json", bytes.NewBuffer(data)) //nolint
 	if err != nil {
 		return nil, err
 	}
@@ -185,10 +185,9 @@ func HTTPPost(url string, data []byte) ([]byte, error) {
 	return extractBody(resp.Body)
 }
 
-// HTTPPostWithStatus is a helper to make POST request call to url
+// HTTPPostWithStatus is a helper to make POST request call to url.
 func HTTPPostWithStatus(url string, data []byte) ([]byte, int, error) {
-	client := newHTTPClient()
-	resp, err := client.Post(sanitizeHTTPURL(url), "application/json", bytes.NewBuffer(data)) //nolint
+	resp, err := httpClient.Post(sanitizeHTTPURL(url), "application/json", bytes.NewBuffer(data)) //nolint
 	if err != nil {
 		// From the Do method for the client.Post
 		// An error is returned if caused by client policy (such as
@@ -208,14 +207,12 @@ func HTTPPostWithStatus(url string, data []byte) ([]byte, int, error) {
 
 // HTTPDelete calls a given URL with the HTTP DELETE method.
 func HTTPDelete(url string) ([]byte, error) {
-	client := newHTTPClient()
-
 	req, err := http.NewRequest("DELETE", sanitizeHTTPURL(url), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := client.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +239,7 @@ func extractBody(r io.ReadCloser) ([]byte, error) {
 		defer r.Close()
 	}
 
-	body, err := ioutil.ReadAll(r)
+	body, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}

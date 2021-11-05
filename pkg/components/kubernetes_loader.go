@@ -11,12 +11,12 @@ import (
 	"time"
 
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
-	"google.golang.org/protobuf/types/known/emptypb"
+
+	"github.com/dapr/kit/logger"
 
 	components_v1alpha1 "github.com/dapr/dapr/pkg/apis/components/v1alpha1"
 	config "github.com/dapr/dapr/pkg/config/modes"
 	operatorv1pb "github.com/dapr/dapr/pkg/proto/operator/v1"
-	"github.com/dapr/kit/logger"
 )
 
 var log = logger.NewLogger("dapr.runtime.components")
@@ -26,23 +26,27 @@ const (
 	operatorMaxRetries  = 100
 )
 
-// KubernetesComponents loads components in a kubernetes environment
+// KubernetesComponents loads components in a kubernetes environment.
 type KubernetesComponents struct {
-	config config.KubernetesConfig
-	client operatorv1pb.OperatorClient
+	config    config.KubernetesConfig
+	client    operatorv1pb.OperatorClient
+	namespace string
 }
 
-// NewKubernetesComponents returns a new kubernetes loader
-func NewKubernetesComponents(configuration config.KubernetesConfig, operatorClient operatorv1pb.OperatorClient) *KubernetesComponents {
+// NewKubernetesComponents returns a new kubernetes loader.
+func NewKubernetesComponents(configuration config.KubernetesConfig, namespace string, operatorClient operatorv1pb.OperatorClient) *KubernetesComponents {
 	return &KubernetesComponents{
-		config: configuration,
-		client: operatorClient,
+		config:    configuration,
+		client:    operatorClient,
+		namespace: namespace,
 	}
 }
 
-// LoadComponents returns components from a given control plane address
+// LoadComponents returns components from a given control plane address.
 func (k *KubernetesComponents) LoadComponents() ([]components_v1alpha1.Component, error) {
-	resp, err := k.client.ListComponents(context.Background(), &emptypb.Empty{}, grpc_retry.WithMax(operatorMaxRetries), grpc_retry.WithPerRetryTimeout(operatorCallTimeout))
+	resp, err := k.client.ListComponents(context.Background(), &operatorv1pb.ListComponentsRequest{
+		Namespace: k.namespace,
+	}, grpc_retry.WithMax(operatorMaxRetries), grpc_retry.WithPerRetryTimeout(operatorCallTimeout))
 	if err != nil {
 		return nil, err
 	}

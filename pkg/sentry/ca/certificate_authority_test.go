@@ -8,17 +8,17 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
-	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/dapr/dapr/pkg/sentry/certs"
 	"github.com/dapr/dapr/pkg/sentry/config"
 	"github.com/dapr/dapr/pkg/sentry/identity"
-	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -79,11 +79,10 @@ func getTestCertAuth() CertificateAuthority {
 	return certAuth
 }
 
-// nolint:gosec
 func writeTestCredentialsToDisk() {
-	ioutil.WriteFile("ca.crt", []byte(rootCert), 0644)
-	ioutil.WriteFile("issuer.crt", []byte(issuerCert), 0644)
-	ioutil.WriteFile("issuer.key", []byte(issuerKey), 0644)
+	os.WriteFile("ca.crt", []byte(rootCert), 0644)
+	os.WriteFile("issuer.crt", []byte(issuerCert), 0644)
+	os.WriteFile("issuer.key", []byte(issuerKey), 0644)
 }
 
 func cleanupCredentials() {

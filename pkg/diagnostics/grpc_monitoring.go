@@ -9,19 +9,20 @@ import (
 	"context"
 	"time"
 
-	diag_utils "github.com/dapr/dapr/pkg/diagnostics/utils"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/tag"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	diag_utils "github.com/dapr/dapr/pkg/diagnostics/utils"
 )
 
 // This implementation is inspired by
 // https://github.com/census-instrumentation/opencensus-go/tree/master/plugin/ocgrpc
 
-// Tag key definitions for http requests
+// Tag key definitions for http requests.
 var (
 	KeyServerMethod = tag.MustNewKey("grpc_server_method")
 	KeyServerStatus = tag.MustNewKey("grpc_server_status")
@@ -95,7 +96,7 @@ func (g *grpcMetrics) Init(appID string) error {
 		diag_utils.NewMeasureView(g.serverCompletedRpcs, []tag.Key{appIDKey, KeyServerMethod, KeyServerStatus}, view.Count()),
 		diag_utils.NewMeasureView(g.clientSentBytes, []tag.Key{appIDKey, KeyClientMethod}, defaultSizeDistribution),
 		diag_utils.NewMeasureView(g.clientReceivedBytes, []tag.Key{appIDKey, KeyClientMethod}, defaultSizeDistribution),
-		diag_utils.NewMeasureView(g.clientRoundtripLatency, []tag.Key{appIDKey, KeyClientMethod, KeyClientStatus}, defaultSizeDistribution),
+		diag_utils.NewMeasureView(g.clientRoundtripLatency, []tag.Key{appIDKey, KeyClientMethod, KeyClientStatus}, defaultLatencyDistribution),
 		diag_utils.NewMeasureView(g.clientCompletedRpcs, []tag.Key{appIDKey, KeyClientMethod, KeyClientStatus}, view.Count()),
 	)
 }
@@ -144,7 +145,7 @@ func (g *grpcMetrics) ClientRequestSent(ctx context.Context, method string, cont
 	return time.Now()
 }
 
-func (g *grpcMetrics) ClientRequestRecieved(ctx context.Context, method, status string, contentSize int64, start time.Time) {
+func (g *grpcMetrics) ClientRequestReceived(ctx context.Context, method, status string, contentSize int64, start time.Time) {
 	if g.enabled {
 		elapsed := float64(time.Since(start) / time.Millisecond)
 		stats.RecordWithTags(
@@ -188,7 +189,7 @@ func (g *grpcMetrics) UnaryClientInterceptor() func(ctx context.Context, method 
 		if err == nil {
 			size = g.getPayloadSize(reply)
 		}
-		g.ClientRequestRecieved(ctx, method, status.Code(err).String(), int64(size), start)
+		g.ClientRequestReceived(ctx, method, status.Code(err).String(), int64(size), start)
 		return err
 	}
 }

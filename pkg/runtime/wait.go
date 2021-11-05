@@ -7,7 +7,7 @@ package runtime
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 )
@@ -28,7 +28,7 @@ func waitUntilDaprOutboundReady(daprHTTPPort string) {
 
 	var err error
 	timeoutAt := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
-	var lastPrintErrorTime = time.Now()
+	lastPrintErrorTime := time.Now()
 	for time.Now().Before(timeoutAt) {
 		err = checkIfOutboundReady(client, outboundReadyHealthURL)
 		if err == nil {
@@ -59,7 +59,7 @@ func checkIfOutboundReady(client *http.Client, outboundReadyHealthURL string) er
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, err = ioutil.ReadAll(resp.Body)
+	_, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}

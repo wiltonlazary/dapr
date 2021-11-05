@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/dapr/components-contrib/bindings"
+
 	"github.com/dapr/dapr/pkg/components"
 )
 
@@ -27,7 +28,7 @@ type (
 		FactoryMethod func() bindings.OutputBinding
 	}
 
-	// Registry is the interface of a components that allows callers to get registered instances of input and output bindings
+	// Registry is the interface of a components that allows callers to get registered instances of input and output bindings.
 	Registry interface {
 		RegisterInputBindings(components ...InputBinding)
 		RegisterOutputBindings(components ...OutputBinding)
@@ -81,7 +82,7 @@ func (b *bindingsRegistry) RegisterOutputBindings(components ...OutputBinding) {
 	}
 }
 
-// Create instantiates an input binding based on `name`.
+// CreateInputBinding Create instantiates an input binding based on `name`.
 func (b *bindingsRegistry) CreateInputBinding(name, version string) (bindings.InputBinding, error) {
 	if method, ok := b.getInputBinding(name, version); ok {
 		return method(), nil
@@ -89,7 +90,7 @@ func (b *bindingsRegistry) CreateInputBinding(name, version string) (bindings.In
 	return nil, errors.Errorf("couldn't find input binding %s/%s", name, version)
 }
 
-// Create instantiates an output binding based on `name`.
+// CreateOutputBinding Create instantiates an output binding based on `name`.
 func (b *bindingsRegistry) CreateOutputBinding(name, version string) (bindings.OutputBinding, error) {
 	if method, ok := b.getOutputBinding(name, version); ok {
 		return method(), nil

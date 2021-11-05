@@ -9,7 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 
@@ -31,7 +31,7 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(""))
 }
 
-// indexHandler is the handler for root path
+// indexHandler is the handler for root path.
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("indexHandler is called")
 
@@ -46,7 +46,6 @@ func testLogCall(w http.ResponseWriter, r *http.Request) {
 	input := "hello"
 	url := fmt.Sprintf("%s/invoke/%s/method/logCall", daprBaseURL, service)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer([]byte(input))) // nolint:gosec
-
 	if err != nil {
 		log.Printf("Could not call service")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -54,7 +53,7 @@ func testLogCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer resp.Body.Close()
-	body, _ := ioutil.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 
 	results := testResponse{
 		input, string(body),
@@ -69,13 +68,13 @@ func logCall(w http.ResponseWriter, r *http.Request) {
 	log.Printf("logCall is called")
 
 	defer r.Body.Close()
-	body, _ := ioutil.ReadAll(r.Body)
+	body, _ := io.ReadAll(r.Body)
 
 	log.Printf("Got: %s", string(body))
 	w.Write(body)
 }
 
-// appRouter initializes restful api router
+// appRouter initializes restful api router.
 func appRouter() *mux.Router {
 	router := mux.NewRouter().StrictSlash(true)
 

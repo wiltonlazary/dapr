@@ -5,7 +5,7 @@
 
 package actors
 
-// Reminder represents a persisted reminder for a unique actor
+// Reminder represents a persisted reminder for a unique actor.
 type Reminder struct {
 	ActorID        string      `json:"actorID,omitempty"`
 	ActorType      string      `json:"actorType,omitempty"`
@@ -14,4 +14,5 @@ type Reminder struct {
 	Period         string      `json:"period"`
 	DueTime        string      `json:"dueTime"`
 	RegisteredTime string      `json:"registeredTime,omitempty"`
+	ExpirationTime string      `json:"expirationTime,omitempty"`
 }

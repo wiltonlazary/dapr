@@ -6,13 +6,15 @@
 package v1
 
 import (
+	"fmt"
 	"testing"
 
-	commonv1pb "github.com/dapr/dapr/pkg/proto/common/v1"
-	internalv1pb "github.com/dapr/dapr/pkg/proto/internals/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
 	"google.golang.org/protobuf/types/known/anypb"
+
+	commonv1pb "github.com/dapr/dapr/pkg/proto/common/v1"
+	internalv1pb "github.com/dapr/dapr/pkg/proto/internals/v1"
 )
 
 func TestInvokeRequest(t *testing.T) {
@@ -77,7 +79,7 @@ func TestMetadata(t *testing.T) {
 	})
 
 	t.Run("HTTP headers", func(t *testing.T) {
-		var req = fasthttp.AcquireRequest()
+		req := fasthttp.AcquireRequest()
 		req.Header.Set("Header1", "Value1")
 		req.Header.Set("Header2", "Value2")
 		req.Header.Set("Header3", "Value3")
@@ -173,4 +175,30 @@ func TestAddHeadersDoesNotOverwrite(t *testing.T) {
 	assert.NotNil(t, req.r.Metadata)
 	assert.NotNil(t, req.r.Metadata["Dapr-Reentrant-Id"])
 	assert.Equal(t, "test", req.r.Metadata["Dapr-Reentrant-Id"].Values[0])
+}
+
+func TestWithCustomHTTPMetadata(t *testing.T) {
+	customMetadataKey := func(i int) string {
+		return fmt.Sprintf("customMetadataKey%d", i)
+	}
+	customMetadataValue := func(i int) string {
+		return fmt.Sprintf("customMetadataValue%d", i)
+	}
+
+	numMetadata := 10
+	md := make(map[string]string, numMetadata)
+	for i := 0; i < numMetadata; i++ {
+		md[customMetadataKey(i)] = customMetadataValue(i)
+	}
+
+	req := NewInvokeMethodRequest("test_method")
+	req.WithCustomHTTPMetadata(md)
+
+	imrMd := req.Metadata()
+	for i := 0; i < numMetadata; i++ {
+		val, ok := imrMd[customMetadataKey(i)]
+		assert.True(t, ok)
+		// We assume only 1 value per key as the input map can only support string -> string mapping.
+		assert.Equal(t, customMetadataValue(i), val.Values[0])
+	}
 }

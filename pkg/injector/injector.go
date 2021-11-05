@@ -9,11 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 
-	"github.com/pkg/errors"
 	v1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,14 +20,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/dapr/kit/logger"
+
 	scheme "github.com/dapr/dapr/pkg/client/clientset/versioned"
 	"github.com/dapr/dapr/pkg/injector/monitoring"
 	"github.com/dapr/dapr/utils"
-	"github.com/dapr/kit/logger"
 )
 
-const port = 4000
-const getKubernetesServiceAccountTimeoutSeconds = 10
+const (
+	port                                      = 4000
+	getKubernetesServiceAccountTimeoutSeconds = 10
+	systemGroup                               = "system:masters"
+)
 
 var log = logger.NewLogger("dapr.injector")
 
@@ -38,9 +41,10 @@ var allowedControllersServiceAccounts = []string{
 	"cronjob-controller",
 	"job-controller",
 	"statefulset-controller",
+	"daemon-set-controller",
 }
 
-// Injector is the interface for the Dapr runtime sidecar injection component
+// Injector is the interface for the Dapr runtime sidecar injection component.
 type Injector interface {
 	Run(ctx context.Context)
 }
@@ -49,13 +53,13 @@ type injector struct {
 	config       Config
 	deserializer runtime.Decoder
 	server       *http.Server
-	kubeClient   *kubernetes.Clientset
+	kubeClient   kubernetes.Interface
 	daprClient   scheme.Interface
 	authUIDs     []string
 }
 
 // toAdmissionResponse is a helper function to create an AdmissionResponse
-// with an embedded error
+// with an embedded error.
 func toAdmissionResponse(err error) *v1.AdmissionResponse {
 	return &v1.AdmissionResponse{
 		Result: &metav1.Status{
@@ -83,8 +87,8 @@ func getAppIDFromRequest(req *v1.AdmissionRequest) string {
 	return appID
 }
 
-// NewInjector returns a new Injector instance with the given config
-func NewInjector(authUIDs []string, config Config, daprClient scheme.Interface, kubeClient *kubernetes.Clientset) Injector {
+// NewInjector returns a new Injector instance with the given config.
+func NewInjector(authUIDs []string, config Config, daprClient scheme.Interface, kubeClient kubernetes.Interface) Injector {
 	mux := http.NewServeMux()
 
 	i := &injector{
@@ -105,15 +109,16 @@ func NewInjector(authUIDs []string, config Config, daprClient scheme.Interface, 
 	return i
 }
 
-// AllowedControllersServiceAccountUID returns an array of UID, list of allowed service account on the webhook handler
-func AllowedControllersServiceAccountUID(ctx context.Context, kubeClient *kubernetes.Clientset) ([]string, error) {
+// AllowedControllersServiceAccountUID returns an array of UID, list of allowed service account on the webhook handler.
+func AllowedControllersServiceAccountUID(ctx context.Context, kubeClient kubernetes.Interface) ([]string, error) {
 	allowedUids := []string{}
 	for i, allowedControllersServiceAccount := range allowedControllersServiceAccounts {
 		saUUID, err := getServiceAccount(ctx, kubeClient, allowedControllersServiceAccount)
 		// i == 0 => "replicaset-controller" is the only one mandatory
-		if err != nil && i == 0 {
-			return nil, err
-		} else if err != nil {
+		if err != nil {
+			if i == 0 {
+				return nil, err
+			}
 			log.Warnf("Unable to get SA %s UID (%s)", allowedControllersServiceAccount, err)
 			continue
 		}
@@ -123,7 +128,7 @@ func AllowedControllersServiceAccountUID(ctx context.Context, kubeClient *kubern
 	return allowedUids, nil
 }
 
-func getServiceAccount(ctx context.Context, kubeClient *kubernetes.Clientset, allowedControllersServiceAccount string) (string, error) {
+func getServiceAccount(ctx context.Context, kubeClient kubernetes.Interface, allowedControllersServiceAccount string) (string, error) {
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, getKubernetesServiceAccountTimeoutSeconds*time.Second)
 	defer cancel()
 
@@ -167,7 +172,7 @@ func (i *injector) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	var body []byte
 	if r.Body != nil {
-		if data, err := ioutil.ReadAll(r.Body); err == nil {
+		if data, err := io.ReadAll(r.Body); err == nil {
 			body = data
 		}
 	}
@@ -178,11 +183,11 @@ func (i *injector) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contentType := r.Header.Get("Content-Type")
-	if contentType != "application/json" {
-		log.Errorf("Content-Type=%s, expect application/json", contentType)
+	if contentType != runtime.ContentTypeJSON {
+		log.Errorf("Content-Type=%s, expect %s", contentType, runtime.ContentTypeJSON)
 		http.Error(
 			w,
-			"invalid Content-Type, expect `application/json`",
+			fmt.Sprintf("invalid Content-Type, expect `%s`", runtime.ContentTypeJSON),
 			http.StatusUnsupportedMediaType,
 		)
 
@@ -192,20 +197,22 @@ func (i *injector) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var admissionResponse *v1.AdmissionResponse
 	var patchOps []PatchOperation
 	var err error
+	patchedSuccessfully := false
 
 	ar := v1.AdmissionReview{}
 	_, gvk, err := i.deserializer.Decode(body, nil, &ar)
 	if err != nil {
 		log.Errorf("Can't decode body: %v", err)
 	} else {
-		if !utils.StringSliceContains(ar.Request.UserInfo.UID, i.authUIDs) {
-			err = errors.Wrapf(err, "unauthorized request")
-			log.Error(err)
+		if !(utils.StringSliceContains(ar.Request.UserInfo.UID, i.authUIDs) || utils.StringSliceContains(systemGroup, ar.Request.UserInfo.Groups)) {
+			log.Errorf("service account '%s' not on the list of allowed controller accounts", ar.Request.UserInfo.Username)
 		} else if ar.Request.Kind.Kind != "Pod" {
-			err = errors.Wrapf(err, "invalid kind for review: %s", ar.Kind)
-			log.Error(err)
+			log.Errorf("invalid kind for review: %s", ar.Kind)
 		} else {
 			patchOps, err = i.getPodPatchOperations(&ar, i.config.Namespace, i.config.SidecarImage, i.config.SidecarImagePullPolicy, i.kubeClient, i.daprClient)
+			if err == nil {
+				patchedSuccessfully = true
+			}
 		}
 	}
 
@@ -257,11 +264,16 @@ func (i *injector) handleRequest(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("Sidecar injector failed to inject for app '%s'. Can't deserialize response: %s", diagAppID, err)
 		monitoring.RecordFailedSidecarInjectionCount(diagAppID, "response")
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", runtime.ContentTypeJSON)
 	if _, err := w.Write(respBytes); err != nil {
 		log.Error(err)
 	} else {
-		log.Infof("Sidecar injector succeeded injection for app '%s'", diagAppID)
-		monitoring.RecordSuccessfulSidecarInjectionCount(diagAppID)
+		if patchedSuccessfully {
+			log.Infof("Sidecar injector succeeded injection for app '%s'", diagAppID)
+			monitoring.RecordSuccessfulSidecarInjectionCount(diagAppID)
+		} else {
+			log.Errorf("Admission succeeded, but pod was not patched. No sidecar injected for '%s'", diagAppID)
+			monitoring.RecordFailedSidecarInjectionCount(diagAppID, "pod_patch")
+		}
 	}
 }

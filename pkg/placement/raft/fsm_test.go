@@ -7,7 +7,7 @@ package raft
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"testing"
 
 	"github.com/hashicorp/raft"
@@ -38,8 +38,8 @@ func TestFSMApply(t *testing.T) {
 
 		assert.True(t, ok)
 		assert.True(t, updated)
-		assert.Equal(t, uint64(1), fsm.state.TableGeneration)
-		assert.Equal(t, 1, len(fsm.state.Members))
+		assert.Equal(t, uint64(1), fsm.state.TableGeneration())
+		assert.Equal(t, 1, len(fsm.state.Members()))
 	})
 
 	t.Run("removeMember", func(t *testing.T) {
@@ -61,8 +61,8 @@ func TestFSMApply(t *testing.T) {
 
 		assert.True(t, ok)
 		assert.True(t, updated)
-		assert.Equal(t, uint64(2), fsm.state.TableGeneration)
-		assert.Equal(t, 0, len(fsm.state.Members))
+		assert.Equal(t, uint64(2), fsm.state.TableGeneration())
+		assert.Equal(t, 0, len(fsm.state.Members()))
 	})
 }
 
@@ -76,17 +76,17 @@ func TestRestore(t *testing.T) {
 		AppID:    "FakeID",
 		Entities: []string{"actorTypeOne", "actorTypeTwo"},
 	})
-	data, err := marshalMsgPack(s)
+	buf := bytes.NewBuffer(make([]byte, 0, 256))
+	err := s.persist(buf)
 	assert.NoError(t, err)
-	buf := ioutil.NopCloser(bytes.NewBuffer(data))
 
 	// act
-	err = fsm.Restore(buf)
+	err = fsm.Restore(io.NopCloser(buf))
 
 	// assert
 	assert.NoError(t, err)
-	assert.Equal(t, 1, len(fsm.State().Members))
-	assert.Equal(t, 2, len(fsm.State().hashingTableMap))
+	assert.Equal(t, 1, len(fsm.State().Members()))
+	assert.Equal(t, 2, len(fsm.State().hashingTableMap()))
 }
 
 func TestPlacementState(t *testing.T) {

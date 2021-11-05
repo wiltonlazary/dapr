@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -21,19 +23,22 @@ import (
 )
 
 const (
-	appPort                 = 3000
-	daprV1URL               = "http://localhost:3500/v1.0"
-	actorMethodURLFormat    = daprV1URL + "/actors/%s/%s/%s/%s"
-	actorSaveStateURLFormat = daprV1URL + "/actors/%s/%s/state/"
-	actorGetStateURLFormat  = daprV1URL + "/actors/%s/%s/state/%s/"
-	defaultActorType        = "testactorfeatures"   // Actor type must be unique per test app.
-	actorTypeEnvName        = "TEST_APP_ACTOR_TYPE" // Env variable tests can set to change actor type.
-	actorIdleTimeout        = "1h"
-	actorScanInterval       = "30s"
-	drainOngoingCallTimeout = "30s"
-	drainRebalancedActors   = true
-	secondsToWaitInMethod   = 5
+	appPort                         = 3000
+	daprV1URL                       = "http://localhost:3500/v1.0"
+	actorMethodURLFormat            = daprV1URL + "/actors/%s/%s/%s/%s"
+	actorSaveStateURLFormat         = daprV1URL + "/actors/%s/%s/state/"
+	actorGetStateURLFormat          = daprV1URL + "/actors/%s/%s/state/%s/"
+	defaultActorType                = "testactorfeatures"                   // Actor type must be unique per test app.
+	actorTypeEnvName                = "TEST_APP_ACTOR_TYPE"                 // To set to change actor type.
+	actorRemindersPartitionsEnvName = "TEST_APP_ACTOR_REMINDERS_PARTITIONS" // To set actor type partition count.
+	actorIdleTimeout                = "1h"
+	actorScanInterval               = "30s"
+	drainOngoingCallTimeout         = "30s"
+	drainRebalancedActors           = true
+	secondsToWaitInMethod           = 5
 )
+
+var httpClient = newHTTPClient()
 
 type daprActor struct {
 	actorType string
@@ -51,11 +56,12 @@ type actorLogEntry struct {
 }
 
 type daprConfig struct {
-	Entities                []string `json:"entities,omitempty"`
-	ActorIdleTimeout        string   `json:"actorIdleTimeout,omitempty"`
-	ActorScanInterval       string   `json:"actorScanInterval,omitempty"`
-	DrainOngoingCallTimeout string   `json:"drainOngoingCallTimeout,omitempty"`
-	DrainRebalancedActors   bool     `json:"drainRebalancedActors,omitempty"`
+	Entities                   []string `json:"entities,omitempty"`
+	ActorIdleTimeout           string   `json:"actorIdleTimeout,omitempty"`
+	ActorScanInterval          string   `json:"actorScanInterval,omitempty"`
+	DrainOngoingCallTimeout    string   `json:"drainOngoingCallTimeout,omitempty"`
+	DrainRebalancedActors      bool     `json:"drainRebalancedActors,omitempty"`
+	RemindersStoragePartitions int      `json:"remindersStoragePartitions,omitempty"`
 }
 
 // response object from an actor invocation request
@@ -69,6 +75,7 @@ type timerReminderRequest struct {
 	Data     string `json:"data,omitempty"`
 	DueTime  string `json:"dueTime,omitempty"`
 	Period   string `json:"period,omitempty"`
+	TTL      string `json:"ttl,omitempty"`
 	Callback string `json:"callback,omitempty"`
 }
 
@@ -100,6 +107,7 @@ type TempTransactionalDelete struct {
 var actorLogs = []actorLogEntry{}
 var actorLogsMutex = &sync.Mutex{}
 var registeredActorType = getActorType()
+var actorReminderPartitions = getActorRemindersPartitions()
 var actors sync.Map
 
 var daprConfigResponse = daprConfig{
@@ -108,6 +116,7 @@ var daprConfigResponse = daprConfig{
 	actorScanInterval,
 	drainOngoingCallTimeout,
 	drainRebalancedActors,
+	actorReminderPartitions,
 }
 
 func resetLogs() {
@@ -124,6 +133,20 @@ func getActorType() string {
 	}
 
 	return actorType
+}
+
+func getActorRemindersPartitions() int {
+	val := os.Getenv(actorRemindersPartitionsEnvName)
+	if val == "" {
+		return 0
+	}
+
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0
+	}
+
+	return n
 }
 
 func appendLog(actorType string, actorID string, action string, start int) {
@@ -284,7 +307,7 @@ func testCallActorHandler(w http.ResponseWriter, r *http.Request) {
 	case "timers":
 		fallthrough
 	case "reminders":
-		body, err := ioutil.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		defer r.Body.Close()
 		if err != nil {
 			log.Printf("Could not get reminder request: %s", err.Error())
@@ -333,7 +356,6 @@ func testCallMetadataHandler(w http.ResponseWriter, r *http.Request) {
 
 // the test side calls the 4 cases below in order
 func actorStateTest(testName string, w http.ResponseWriter, actorType string, id string) error {
-
 	// save multiple key values
 	if testName == "savestatetest" {
 		url := fmt.Sprintf(actorSaveStateURLFormat, actorType, id)
@@ -380,7 +402,7 @@ func actorStateTest(testName string, w http.ResponseWriter, actorType string, id
 		// perform a get on a key saved above
 		url := fmt.Sprintf(actorGetStateURLFormat, actorType, id, "key1")
 
-		body, err := httpCall("GET", url, nil, 200)
+		_, err := httpCall("GET", url, nil, 200)
 		if err != nil {
 			log.Printf("actor state call failed: %s", err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
@@ -389,7 +411,7 @@ func actorStateTest(testName string, w http.ResponseWriter, actorType string, id
 
 		// query a non-existing key.  This should return 204 with 0 length response.
 		url = fmt.Sprintf(actorGetStateURLFormat, actorType, id, "keynotpresent")
-		body, err = httpCall("GET", url, nil, 204)
+		body, err := httpCall("GET", url, nil, 204)
 		if err != nil {
 			log.Printf("actor state call failed: %s", err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
@@ -397,14 +419,14 @@ func actorStateTest(testName string, w http.ResponseWriter, actorType string, id
 		}
 
 		if len(body) != 0 {
-			log.Println("expected 0 length reponse")
+			log.Println("expected 0 length response")
 			w.WriteHeader(http.StatusInternalServerError)
-			return errors.New("expected 0 length reponse")
+			return errors.New("expected 0 length response")
 		}
 
 		// query a non-existing actor.  This should return 400.
 		url = fmt.Sprintf(actorGetStateURLFormat, actorType, "actoriddoesnotexist", "keynotpresent")
-		body, err = httpCall("GET", url, nil, 400)
+		_, err = httpCall("GET", url, nil, 400)
 		if err != nil {
 			log.Printf("actor state call failed: %s", err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
@@ -443,7 +465,7 @@ func actorStateTest(testName string, w http.ResponseWriter, actorType string, id
 		// perform a get on an existing key
 		url := fmt.Sprintf(actorGetStateURLFormat, actorType, id, "key1")
 
-		body, err := httpCall("GET", url, nil, 200)
+		_, err := httpCall("GET", url, nil, 200)
 		if err != nil {
 			log.Printf("actor state call failed: %s", err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
@@ -453,7 +475,7 @@ func actorStateTest(testName string, w http.ResponseWriter, actorType string, id
 		// query a non-existing key - this was present but deleted.  This should return 204 with 0 length response.
 		url = fmt.Sprintf(actorGetStateURLFormat, actorType, id, "key4")
 
-		body, err = httpCall("GET", url, nil, 204)
+		body, err := httpCall("GET", url, nil, 204)
 		if err != nil {
 			log.Printf("actor state call failed: %s", err.Error())
 			w.WriteHeader(http.StatusInternalServerError)
@@ -461,9 +483,9 @@ func actorStateTest(testName string, w http.ResponseWriter, actorType string, id
 		}
 
 		if len(body) != 0 {
-			log.Println("expected 0 length reponse")
+			log.Println("expected 0 length response")
 			w.WriteHeader(http.StatusInternalServerError)
-			return errors.New("expected 0 length reponse")
+			return errors.New("expected 0 length response")
 		}
 	} else {
 		return errors.New("actorStateTest() - unexpected option")
@@ -488,8 +510,7 @@ func httpCall(method string, url string, requestBody interface{}, expectedHTTPSt
 		return nil, err
 	}
 
-	client := http.Client{}
-	res, err := client.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +518,7 @@ func httpCall(method string, url string, requestBody interface{}, expectedHTTPSt
 	defer res.Body.Close()
 
 	if res.StatusCode != expectedHTTPStatusCode {
-		errBody, err := ioutil.ReadAll(res.Body)
+		errBody, err := io.ReadAll(res.Body)
 		if err == nil {
 			t := fmt.Errorf("Expected http status %d, received %d, payload ='%s'", expectedHTTPStatusCode, res.StatusCode, string(errBody))
 			return nil, t
@@ -507,7 +528,7 @@ func httpCall(method string, url string, requestBody interface{}, expectedHTTPSt
 		return nil, t
 	}
 
-	resBody, err := ioutil.ReadAll(res.Body)
+	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -547,6 +568,21 @@ func appRouter() *mux.Router {
 	router.Use(mux.CORSMethodMiddleware(router))
 
 	return router
+}
+
+func newHTTPClient() *http.Client {
+	dialer := &net.Dialer{ //nolint:exhaustivestruct
+		Timeout: 5 * time.Second,
+	}
+	netTransport := &http.Transport{ //nolint:exhaustivestruct
+		DialContext:         dialer.DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+	}
+
+	return &http.Client{ //nolint:exhaustivestruct
+		Timeout:   30 * time.Second,
+		Transport: netTransport,
+	}
 }
 
 func main() {

@@ -5,7 +5,7 @@
 
 package kubernetes
 
-// AppDescription holds the deployment information of test app
+// AppDescription holds the deployment information of test app.
 type AppDescription struct {
 	AppName           string
 	AppPort           int
@@ -13,6 +13,7 @@ type AppDescription struct {
 	AppEnv            map[string]string
 	DaprEnabled       bool
 	ImageName         string
+	ImageSecret       string
 	RegistryName      string
 	Replicas          int32
 	IngressEnabled    bool

@@ -11,23 +11,26 @@ import (
 
 	"k8s.io/klog"
 
+	"github.com/dapr/kit/logger"
+
 	"github.com/dapr/dapr/pkg/metrics"
 	"github.com/dapr/dapr/pkg/operator"
 	"github.com/dapr/dapr/pkg/operator/monitoring"
 	"github.com/dapr/dapr/pkg/signals"
 	"github.com/dapr/dapr/pkg/version"
-	"github.com/dapr/kit/logger"
 )
 
-var log = logger.NewLogger("dapr.operator")
-var config string
-var certChainPath string
-var disableLeaderElection bool
+var (
+	log                   = logger.NewLogger("dapr.operator")
+	config                string
+	certChainPath         string
+	disableLeaderElection bool
+)
 
 const (
 	defaultCredentialsPath = "/var/run/dapr/credentials"
 
-	// defaultDaprSystemConfigName is the default resource object name for Dapr System Config
+	// defaultDaprSystemConfigName is the default resource object name for Dapr System Config.
 	defaultDaprSystemConfigName = "daprsystem"
 )
 
@@ -36,7 +39,11 @@ func main() {
 	log.Infof("starting Dapr Operator -- version %s -- commit %s", version.Version(), version.Commit())
 
 	ctx := signals.Context()
-	operator.NewOperator(config, certChainPath, !disableLeaderElection).Run(ctx)
+	go operator.NewOperator(config, certChainPath, !disableLeaderElection).Run(ctx)
+	// The webhooks use their own controller context and stops on SIGTERM and SIGINT.
+	go operator.RunWebhooks(!disableLeaderElection)
+
+	<-ctx.Done() // Wait for SIGTERM and SIGINT.
 
 	shutdownDuration := 5 * time.Second
 	log.Infof("allowing %s for graceful shutdown to complete", shutdownDuration)

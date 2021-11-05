@@ -16,13 +16,14 @@ jobs:
     name: end-to-end ${{ matrix.target_os }} tests
     runs-on: ${{ matrix.os }}
     env:
-      GOVER: 1.16
+      GOVER: 1.17
       KUBECTLVER: v1.19.3
       GOOS: ${{ matrix.target_os }}
       GOARCH: ${{ matrix.target_arch }}
       GOPROXY: https://proxy.golang.org
       DAPR_REGISTRY: ${{ secrets.DOCKER_TEST_REGISTRY }}
       DAPR_TEST_REGISTRY: ${{ secrets.DOCKER_TEST_REGISTRY }}
+      TEST_CLOUD_ENV: azure
       HELMVER: v3.4.0
       DAPR_NAMESPACE: dapr-tests
       MAX_TEST_TIMEOUT: 5400
@@ -90,7 +91,7 @@ jobs:
           az login --service-principal -u ${{ secrets.AZURE_LOGIN_USER }} -p ${{ secrets.AZURE_LOGIN_PASS }} --tenant ${{ secrets.AZURE_TENANT }} --output none
       - name: Find the test cluster
         if: env.CHECKOUT_REPO != ''
-        run: ./tests/test-infra/find_cluster.sh ./tests/test-infra/e2e-list.txt
+        run: ./tests/test-infra/find_cluster.sh ./tests/test-infra/e2e-list.${{ matrix.target_os }}.txt
         shell: bash
       - name: Add the test status comment to PR
         if: github.event_name == 'repository_dispatch' && env.CHECKOUT_REPO != ''
@@ -122,6 +123,14 @@ jobs:
         if: env.TEST_CLUSTER != ''
         run: |
           docker login -u ${{ secrets.DOCKER_REGISTRY_ID }} -p ${{ secrets.DOCKER_REGISTRY_PASS }}
+      - name: Setup environment variables for ${{ env.TEST_CLOUD_ENV }}
+        if: env.TEST_CLUSTER != '' && env.TEST_CLOUD_ENV != ''
+        run: ./tests/test-infra/setup_${{ env.TEST_CLOUD_ENV }}_env.ps1
+        shell: pwsh
+      - name: Start setup for cloud resources
+        if: env.TEST_CLUSTER != '' && env.TEST_CLOUD_ENV != ''
+        run: ./tests/test-infra/start_${{ env.TEST_CLOUD_ENV }}_setup.ps1
+        shell: pwsh
       - name: Build dapr and its docker image and push them to test registry
         if: env.TEST_CLUSTER != ''
         run: |
@@ -155,6 +164,10 @@ jobs:
         if: env.TEST_CLUSTER != ''
         run: |
           make push-e2e-app-all
+      - name: Verify cloud resources
+        if: env.TEST_CLUSTER != '' && env.TEST_CLOUD_ENV != ''
+        run: ./tests/test-infra/verify_${{ env.TEST_CLOUD_ENV }}_setup.ps1
+        shell: pwsh
       - name: Run E2E tests
         if: env.TEST_CLUSTER != ''
         run: make test-e2e-all
@@ -172,8 +185,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@master
         with:
+          #TODO: .json suffix can be removed from artifact name after test analytics scripts are updated
           name: ${{ matrix.target_os }}_${{ matrix.target_arch }}_e2e.json
-          path: ${{ env.TEST_OUTPUT_FILE_PREFIX }}_e2e.json
+          path: ${{ env.TEST_OUTPUT_FILE_PREFIX }}_e2e.*
       - name: Add test result comment to PR
         if: always() && github.event_name == 'repository_dispatch' && env.TEST_CLUSTER != ''
         env:

@@ -14,6 +14,12 @@ import (
 
 	nethttp "net/http"
 
+	jsoniter "github.com/json-iterator/go"
+	"github.com/valyala/fasthttp"
+	"go.opencensus.io/plugin/ochttp/propagation/tracecontext"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/dapr/dapr/pkg/channel"
 	"github.com/dapr/dapr/pkg/config"
 	diag "github.com/dapr/dapr/pkg/diagnostics"
@@ -22,15 +28,10 @@ import (
 	commonv1pb "github.com/dapr/dapr/pkg/proto/common/v1"
 	internalv1pb "github.com/dapr/dapr/pkg/proto/internals/v1"
 	auth "github.com/dapr/dapr/pkg/runtime/security"
-	jsoniter "github.com/json-iterator/go"
-	"github.com/valyala/fasthttp"
-	"go.opencensus.io/plugin/ochttp/propagation/tracecontext"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const (
-	// HTTPStatusCode is an dapr http channel status code
+	// HTTPStatusCode is an dapr http channel status code.
 	HTTPStatusCode = "http.status_code"
 	httpScheme     = "http"
 	httpsScheme    = "https"
@@ -38,19 +39,20 @@ const (
 	appConfigEndpoint = "dapr/config"
 )
 
-// Channel is an HTTP implementation of an AppChannel
+// Channel is an HTTP implementation of an AppChannel.
 type Channel struct {
-	client         *fasthttp.Client
-	baseAddress    string
-	ch             chan int
-	tracingSpec    config.TracingSpec
-	appHeaderToken string
-	json           jsoniter.API
+	client              *fasthttp.Client
+	baseAddress         string
+	ch                  chan int
+	tracingSpec         config.TracingSpec
+	appHeaderToken      string
+	json                jsoniter.API
+	maxResponseBodySize int
 }
 
 // CreateLocalChannel creates an HTTP AppChannel
 // nolint:gosec
-func CreateLocalChannel(port, maxConcurrency int, spec config.TracingSpec, sslEnabled bool) (channel.AppChannel, error) {
+func CreateLocalChannel(port, maxConcurrency int, spec config.TracingSpec, sslEnabled bool, maxRequestBodySize int, readBufferSize int) (channel.AppChannel, error) {
 	scheme := httpScheme
 	if sslEnabled {
 		scheme = httpsScheme
@@ -60,11 +62,14 @@ func CreateLocalChannel(port, maxConcurrency int, spec config.TracingSpec, sslEn
 		client: &fasthttp.Client{
 			MaxConnsPerHost:           1000000,
 			MaxIdemponentCallAttempts: 0,
+			MaxResponseBodySize:       maxRequestBodySize * 1024 * 1024,
+			ReadBufferSize:            readBufferSize * 1024,
 		},
-		baseAddress:    fmt.Sprintf("%s://%s:%d", scheme, channel.DefaultChannelAddress, port),
-		tracingSpec:    spec,
-		appHeaderToken: auth.GetAppToken(),
-		json:           jsoniter.ConfigFastest,
+		baseAddress:         fmt.Sprintf("%s://%s:%d", scheme, channel.DefaultChannelAddress, port),
+		tracingSpec:         spec,
+		appHeaderToken:      auth.GetAppToken(),
+		json:                jsoniter.ConfigFastest,
+		maxResponseBodySize: maxRequestBodySize,
 	}
 
 	if sslEnabled {
@@ -74,10 +79,11 @@ func CreateLocalChannel(port, maxConcurrency int, spec config.TracingSpec, sslEn
 	if maxConcurrency > 0 {
 		c.ch = make(chan int, maxConcurrency)
 	}
+
 	return c, nil
 }
 
-// GetBaseAddress returns the application base address
+// GetBaseAddress returns the application base address.
 func (h *Channel) GetBaseAddress() string {
 	return h.baseAddress
 }
@@ -110,7 +116,7 @@ func (h *Channel) GetAppConfig() (*config.ApplicationConfig, error) {
 	return &config, nil
 }
 
-// InvokeMethod invokes user code via HTTP
+// InvokeMethod invokes user code via HTTP.
 func (h *Channel) InvokeMethod(ctx context.Context, req *invokev1.InvokeMethodRequest) (*invokev1.InvokeMethodResponse, error) {
 	// Check if HTTP Extension is given. Otherwise, it will return error.
 	httpExt := req.Message().GetHttpExtension()
@@ -148,7 +154,7 @@ func (h *Channel) invokeMethodV1(ctx context.Context, req *invokev1.InvokeMethod
 	startRequest := time.Now()
 
 	// Send request to user application
-	var resp = fasthttp.AcquireResponse()
+	resp := fasthttp.AcquireResponse()
 	err := h.client.Do(channelReq, resp)
 	defer func() {
 		fasthttp.ReleaseRequest(channelReq)
@@ -157,18 +163,23 @@ func (h *Channel) invokeMethodV1(ctx context.Context, req *invokev1.InvokeMethod
 
 	elapsedMs := float64(time.Since(startRequest) / time.Millisecond)
 
+	if err != nil {
+		diag.DefaultHTTPMonitoring.ClientRequestCompleted(ctx, verb, req.Message().GetMethod(), strconv.Itoa(nethttp.StatusInternalServerError), int64(resp.Header.ContentLength()), elapsedMs)
+		return nil, err
+	}
+
 	if h.ch != nil {
 		<-h.ch
 	}
 
-	rsp := h.parseChannelResponse(req, resp, err)
+	rsp := h.parseChannelResponse(req, resp)
 	diag.DefaultHTTPMonitoring.ClientRequestCompleted(ctx, verb, req.Message().GetMethod(), strconv.Itoa(int(rsp.Status().Code)), int64(resp.Header.ContentLength()), elapsedMs)
 
 	return rsp, nil
 }
 
 func (h *Channel) constructRequest(ctx context.Context, req *invokev1.InvokeMethodRequest) *fasthttp.Request {
-	var channelReq = fasthttp.AcquireRequest()
+	channelReq := fasthttp.AcquireRequest()
 
 	// Construct app channel URI: VERB http://localhost:3000/method?query1=value1
 	uri := fmt.Sprintf("%s/%s", h.baseAddress, req.Message().GetMethod())
@@ -200,20 +211,14 @@ func (h *Channel) constructRequest(ctx context.Context, req *invokev1.InvokeMeth
 	return channelReq
 }
 
-func (h *Channel) parseChannelResponse(req *invokev1.InvokeMethodRequest, resp *fasthttp.Response, respErr error) *invokev1.InvokeMethodResponse {
+func (h *Channel) parseChannelResponse(req *invokev1.InvokeMethodRequest, resp *fasthttp.Response) *invokev1.InvokeMethodResponse {
 	var statusCode int
 	var contentType string
 	var body []byte
 
-	if respErr != nil {
-		statusCode = fasthttp.StatusInternalServerError
-		contentType = string(invokev1.JSONContentType)
-		body = []byte(fmt.Sprintf("{\"error\": \"client error: %s\"}", respErr))
-	} else {
-		statusCode = resp.StatusCode()
-		contentType = (string)(resp.Header.ContentType())
-		body = resp.Body()
-	}
+	statusCode = resp.StatusCode()
+	contentType = (string)(resp.Header.ContentType())
+	body = resp.Body()
 
 	// Convert status code
 	rsp := invokev1.NewInvokeMethodResponse(int32(statusCode), "", nil)

@@ -41,6 +41,9 @@ spec:
         app.kubernetes.io/component: sentry
         app.kubernetes.io/part-of: "dapr"
         app.kubernetes.io/managed-by: "helm"
+        {{- with .Values.global.labels }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
 {{- if eq .Values.global.prometheus.enabled true }}
       annotations:
         prometheus.io/scrape: "{{ .Values.global.prometheus.enabled }}"
@@ -48,18 +51,6 @@ spec:
         prometheus.io/path: "/"
 {{- end }}
     spec:
-{{- if eq .Values.global.ha.enabled true }}
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchExpressions:
-              - key: app
-                operator: In
-                values:
-                - dapr-sentry
-            topologyKey: "kubernetes.io/hostname"
-{{- end }}
       containers:
       - name: dapr-sentry
         livenessProbe:
@@ -173,6 +164,17 @@ spec:
                     values:
                     - {{ .Values.global.daprControlPlaneArch }}
 {{- end }}
+{{- if .Values.global.ha.enabled }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - dapr-sentry
+            topologyKey: "kubernetes.io/hostname"
+{{- end }}
 {{- if .Values.global.imagePullSecrets }}
       imagePullSecrets:
         - name: {{ .Values.global.imagePullSecrets }}
@@ -180,4 +182,8 @@ spec:
 {{- if .Values.global.nodeSelector }}
       nodeSelector:
 {{ toYaml .Values.global.nodeSelector | indent 8 }}
+{{- end }}
+{{- if .Values.global.tolerations }}
+      tolerations:
+{{ toYaml .Values.global.tolerations | indent 8 }}
 {{- end }}

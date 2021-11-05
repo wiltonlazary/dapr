@@ -9,14 +9,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"sync"
+	"time"
 
-	"github.com/dapr/dapr/pkg/config"
 	"github.com/gorilla/mux"
 	"github.com/valyala/fasthttp"
+
+	"github.com/dapr/dapr/pkg/config"
 )
 
 const (
@@ -58,9 +61,13 @@ type actorCall struct {
 	Method    string `json:"method"`
 }
 
-var actorLogs = []actorLogEntry{}
-var actorLogsMutex = &sync.Mutex{}
-var maxStackDepth = 5
+var httpClient = newHTTPClient()
+
+var (
+	actorLogs      = []actorLogEntry{}
+	actorLogsMutex = &sync.Mutex{}
+	maxStackDepth  = 5
+)
 
 var daprConfigResponse = daprConfig{
 	[]string{defaultActorType},
@@ -94,7 +101,7 @@ func getLogs() []actorLogEntry {
 	return actorLogs
 }
 
-// indexHandler is the handler for root path
+// indexHandler is the handler for root path.
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("indexHandler is called")
 
@@ -128,7 +135,7 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 func actorTestCallHandler(w http.ResponseWriter, r *http.Request) {
 	log.Print("Handling actor test call")
 
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	defer r.Body.Close()
 
 	if err != nil {
@@ -147,15 +154,14 @@ func actorTestCallHandler(w http.ResponseWriter, r *http.Request) {
 	nextCall, nextBody := advanceCallStackForNextRequest(reentrantReq)
 	req, _ := http.NewRequest("PUT", fmt.Sprintf(actorMethodURLFormat, nextCall.ActorType, nextCall.ActorID, nextCall.Method), bytes.NewReader(nextBody))
 
-	client := http.Client{}
-	res, err := client.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		w.Write([]byte(err.Error()))
 		w.WriteHeader(fasthttp.StatusInternalServerError)
 		return
 	}
 
-	respBody, err := ioutil.ReadAll(res.Body)
+	respBody, err := io.ReadAll(res.Body)
 	defer res.Body.Close()
 
 	if err != nil {
@@ -184,7 +190,7 @@ func actorMethodHandler(w http.ResponseWriter, r *http.Request) {
 func reentrantCallHandler(w http.ResponseWriter, r *http.Request) {
 	log.Print("Handling reentrant call")
 	appendLog(mux.Vars(r)["actorType"], mux.Vars(r)["id"], fmt.Sprintf("Enter %s", mux.Vars(r)["method"]))
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	defer r.Body.Close()
 
 	if err != nil {
@@ -210,8 +216,7 @@ func reentrantCallHandler(w http.ResponseWriter, r *http.Request) {
 	reentrancyID := r.Header.Get("Dapr-Reentrancy-Id")
 	req.Header.Add("Dapr-Reentrancy-Id", reentrancyID)
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 
 	log.Printf("Call status: %d\n", resp.StatusCode)
 	if err != nil || resp.StatusCode == fasthttp.StatusInternalServerError {
@@ -239,7 +244,7 @@ func advanceCallStackForNextRequest(req reentrantRequest) (actorCall, []byte) {
 	return nextCall, nextBody
 }
 
-// appRouter initializes restful api router
+// appRouter initializes restful api router.
 func appRouter() *mux.Router {
 	router := mux.NewRouter().StrictSlash(true)
 
@@ -255,6 +260,21 @@ func appRouter() *mux.Router {
 	router.Use(mux.CORSMethodMiddleware(router))
 
 	return router
+}
+
+func newHTTPClient() *http.Client {
+	dialer := &net.Dialer{ //nolint:exhaustivestruct
+		Timeout: 5 * time.Second,
+	}
+	netTransport := &http.Transport{ //nolint:exhaustivestruct
+		DialContext:         dialer.DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+	}
+
+	return &http.Client{ //nolint:exhaustivestruct
+		Timeout:   30 * time.Second,
+		Transport: netTransport,
+	}
 }
 
 func main() {
